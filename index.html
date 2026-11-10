@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PolyTrack World Records</title>
+<meta name="description" content="Community PolyTrack track archive with live leaderboards: world records, maps finished, countries and the latest records.">
+<meta name="theme-color" content="#ff5a36">
+<link rel="icon" type="image/svg+xml" href="favicon.svg">
+
+<!-- Discord / social link preview.
+     IMPORTANT: replace YOUR-USERNAME and YOUR-REPO below with your real GitHub Pages address
+     (the image link must be the full https:// address for Discord to show it). -->
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="PolyTrack World Records">
+<meta property="og:title" content="PolyTrack World Records">
+<meta property="og:description" content="Community track archive with live leaderboards: world records, maps finished, countries and the latest records.">
+<meta property="og:image" content="https://YOUR-USERNAME.github.io/YOUR-REPO/preview.png">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<div class="wrap">
+  <header class="top">
+    <div class="logo">
+      <svg width="34" height="34" viewBox="0 0 34 34">
+        <polygon points="17,2 32,26 2,26" fill="#ff5a36"/>
+        <polygon points="17,2 32,26 17,17" fill="#ff7a52"/>
+      </svg>
+      <div class="logo-text">
+        <h1>PolyTrack World Records</h1>
+        <p>Community track archive &amp; live leaderboards</p>
+      </div>
+    </div>
+    <div class="stat"><b id="trackCount">0</b>tracks archived</div>
+  </header>
+
+  <nav class="tabs">
+    <a href="#" id="navTracks" class="tab active">Tracks</a>
+    <a href="#leaderboard" id="navLeaderboard" class="tab">Leaderboard</a>
+  </nav>
+
+  <main id="app"></main>
+
+  <footer>
+    Leaderboards are fetched live from Kodub's PolyTrack server. Track codes are pasted into
+    <a href="https://kodub.itch.io/polytrack" target="_blank" rel="noopener">PolyTrack</a>'s track importer to play.
+    This is an unofficial, fan-made archive and isn't affiliated with Kodub.
+  </footer>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script src="script.js"></script>
+</body>
+</html>
