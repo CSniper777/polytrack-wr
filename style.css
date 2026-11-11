@@ -75,7 +75,8 @@ header.top .stat b{display:block;font-family:'Space Grotesk',sans-serif;font-siz
   background:none;border:none;outline:none;color:var(--text);width:100%;font-size:14px;
 }
 .search-box svg{flex:none;opacity:0.5;}
-select#sortSelect{
+select#sortSelect,
+.lb-select{
   background:var(--surface);
   border:1px solid var(--border);
   color:var(--text);
@@ -282,3 +283,8 @@ footer a{color:var(--text-muted);text-decoration:underline;}
 .rank-row.static{cursor:default;}
 .rank-row.static:hover{background:var(--surface);border-color:var(--border);}
 .wr-row .wnum{color:var(--text-muted);font-weight:400;font-size:12px;margin-left:4px;}
+
+/* Leaderboard pager */
+.pager{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin:4px 0;}
+.pager-info{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--text-muted);}
+.pager .lb-select{padding:7px 10px;}
