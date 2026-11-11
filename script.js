@@ -14,6 +14,15 @@ const CONFIG = {
   // How many rows each leaderboard page shows.
   LB_PAGE_SIZE: 100,
 
+  // --- Leaderboard auto-refresh ---
+  // The leaderboards are re-downloaded at most this often (and a recent copy
+  // is kept in the browser, so reloading the page doesn't download it again).
+  LB_REFRESH_MINUTES: 5,
+  // If an update fails, try again after this many seconds (old data stays visible).
+  LB_RETRY_SECONDS: 60,
+  // The Refresh button ignores clicks if the data is newer than this.
+  LB_MIN_REFRESH_SECONDS: 30,
+
   // --- "Maps finished" leaderboard (needs every run on every track) ---
   // Runs requested per API call. 500 is the server's maximum.
   FINISH_PAGE_SIZE: 500,
@@ -141,10 +150,10 @@ function renderList() {
     const sortMode = sortSelect.value;
     const needsStats = unbeatenOnly || ["mostPlayed", "leastPlayed", "shortest", "longest"].includes(sortMode);
 
-    let stats = wrCache; // reuse cached data if the leaderboard tab already fetched it
+    let stats = wrStore.data; // reuse the saved/cached data if we already have it
     if (needsStats && !stats) {
       grid.innerHTML = `<div class="lb-loading">Fetching run data across ${TRACKS.length} track${TRACKS.length === 1 ? "" : "s"}…</div>`;
-      stats = await getWrData(false);
+      stats = await wrStore.ensure();
       // bail out if the user changed search/sort/toggle while this was loading
       if (!document.getElementById("trackGrid") || sortSelect.value !== sortMode || unbeatenToggle.classList.contains("active") !== unbeatenOnly) return;
     }
@@ -215,7 +224,7 @@ function renderList() {
       location.hash = `#${pick.number}`;
       return;
     }
-    const stats = wrCache || (await getWrData(false));
+    const stats = wrStore.data || (await wrStore.ensure());
     const pool = TRACKS.filter((t) => (stats.trackTotals[t.number] ?? null) === 0);
     if (pool.length === 0) {
       showToast("No unbeaten tracks right now");
@@ -386,7 +395,6 @@ function timeAgo(iso) {
    top run from every track in TRACKS, in parallel, and caches the
    result for the rest of the session.
    ============================================================ */
-let wrCache = null;
 
 async function fetchTrackWinner(track) {
   const url = `${CONFIG.LEADERBOARD_URL}?version=${encodeURIComponent(CONFIG.GAME_VERSION)}&trackId=${encodeURIComponent(track.trackId)}&skip=0&amount=1`;
@@ -454,12 +462,6 @@ async function computeWrData() {
   return { players: list, records, countries, noCountry, trackTotals, trackBestFrames, failed, total: TRACKS.length };
 }
 
-async function getWrData(force) {
-  if (wrCache && !force) return wrCache;
-  wrCache = await computeWrData();
-  return wrCache;
-}
-
 /* ============================================================
    MAPS-FINISHED LEADERBOARD
    Ranks players by how many tracks they have a time on, then by
@@ -467,8 +469,6 @@ async function getWrData(force) {
    Needs EVERY run on every track, so it pages through each track's
    leaderboard. Cached for the rest of the session.
    ============================================================ */
-let finishCache = null;
-let finishPromise = null;
 
 // Page sizes to try, biggest first. If the server rejects a size we step
 // down to the next one, and remember whichever size finally worked.
@@ -584,13 +584,202 @@ async function computeFinishData(onProgress) {
   return { players: list, failed, truncated, firstError, total: TRACKS.length };
 }
 
-function getFinishData(force, onProgress) {
-  if (!force && finishCache) return Promise.resolve(finishCache);
-  if (!force && finishPromise) return finishPromise;
-  finishPromise = computeFinishData(onProgress)
-    .then((data) => { finishCache = data; return data; })
-    .finally(() => { finishPromise = null; });
-  return finishPromise;
+/* ============================================================
+   DATA STORES
+   The two big datasets (world-record data and the every-run data used by
+   "Maps finished") live in a "store" that:
+     - keeps the last good copy, also saved in the browser so reloading the
+       page shows it instantly instead of downloading everything again,
+     - refreshes it in the background every LB_REFRESH_MINUTES while a
+       leaderboard page is open, WITHOUT hiding the current list,
+     - keeps the old data if a refresh fails.
+   ============================================================ */
+const refreshMs = () => CONFIG.LB_REFRESH_MINUTES * 60 * 1000;
+const retryMs = () => CONFIG.LB_RETRY_SECONDS * 1000;
+
+// Changes whenever tracks.json or the game version changes, which throws
+// away the saved copy (it would be out of date).
+function tracksSignature() {
+  return CONFIG.GAME_VERSION + "|" + TRACKS.map((t) => `${t.number}:${t.trackId}`).join(",");
+}
+
+function makeStore(name, storageKey, compute, serialize, deserialize) {
+  const st = {
+    name,
+    data: null,
+    fetchedAt: 0,
+    nextAt: 0,
+    updating: false,
+    progress: null,
+    lastError: null,
+    changed: true,
+    lastJson: null,
+    promise: null,
+    watch: null, // optional (done, total) callback used by loading screens
+  };
+
+  st.restore = function () {
+    try {
+      const raw = localStorage.getItem(storageKey);
+      if (!raw) return;
+      const obj = JSON.parse(raw);
+      if (obj.v !== 1 || obj.sig !== tracksSignature()) return;
+      st.data = deserialize(obj.data);
+      st.fetchedAt = obj.fetchedAt;
+      st.nextAt = st.fetchedAt + refreshMs();
+    } catch (e) {
+      st.data = null;
+    }
+  };
+
+  function persist(json) {
+    try {
+      localStorage.setItem(storageKey, `{"v":1,"sig":${JSON.stringify(tracksSignature())},"fetchedAt":${st.fetchedAt},"data":${json}}`);
+    } catch (e) {
+      // Storage full or unavailable: the site still works, it just downloads again on reload.
+    }
+  }
+
+  st.refresh = function () {
+    if (st.promise) return st.promise;
+    st.updating = true;
+    st.progress = null;
+    updateTimer();
+
+    st.promise = compute((done, total) => {
+      st.progress = { done, total };
+      if (st.watch) st.watch(done, total);
+      updateTimer();
+    })
+      .then((fresh) => {
+        const old = st.data;
+        // Never replace good data with a worse result (e.g. the network dropped mid-update).
+        const worse = fresh.total > 0 && (fresh.failed === fresh.total || (old && fresh.failed > old.failed));
+        if (old && worse) {
+          st.lastError = new Error("Update failed");
+          st.nextAt = Date.now() + retryMs();
+          st.changed = false;
+          return st.data;
+        }
+        const json = JSON.stringify(serialize(fresh));
+        st.changed = json !== st.lastJson;
+        st.lastJson = json;
+        st.data = fresh;
+        st.fetchedAt = Date.now();
+        st.lastError = null;
+        st.nextAt = st.fetchedAt + (fresh.failed > 0 ? retryMs() : refreshMs());
+        persist(json);
+        return st.data;
+      })
+      .catch((err) => {
+        console.error(`Couldn't update the ${name} data`, err);
+        st.lastError = err;
+        st.nextAt = Date.now() + retryMs();
+        st.changed = false;
+        if (!st.data) throw err;
+        return st.data;
+      })
+      .finally(() => {
+        st.updating = false;
+        st.progress = null;
+        st.promise = null;
+        updateTimer();
+        onStoreUpdated(st);
+      });
+    return st.promise;
+  };
+
+  // Returns the data we have (even if a little old); only downloads when we have nothing at all.
+  st.ensure = async function () {
+    if (st.data) return st.data;
+    await st.refresh();
+    return st.data;
+  };
+
+  return st;
+}
+
+function serializeFinish(d) {
+  return {
+    failed: d.failed, truncated: d.truncated, firstError: d.firstError, total: d.total,
+    players: d.players.map((p) => [
+      p.userId, p.nickname, p.countryCode,
+      p.finishes.map((f) => [f.trackNumber, f.rank, f.totalRuns, f.frames, f.time]),
+    ]),
+  };
+}
+
+function deserializeFinish(raw) {
+  const names = {};
+  TRACKS.forEach((t) => { names[t.number] = t.name; });
+  const players = raw.players.map(([userId, nickname, countryCode, fin]) => {
+    const finishes = fin.map(([trackNumber, rank, totalRuns, frames, time]) => ({
+      trackNumber, trackName: names[trackNumber] || `#${trackNumber}`, rank, totalRuns, frames, time,
+    }));
+    return { userId, nickname, countryCode, finishes, avgRank: finishes.reduce((sum, f) => sum + f.rank, 0) / finishes.length };
+  });
+  return { players, failed: raw.failed, truncated: raw.truncated, firstError: raw.firstError, total: raw.total };
+}
+
+const wrStore = makeStore("world-record", "ptwr_wr_v1", () => computeWrData(), (d) => d, (d) => d);
+const finishStore = makeStore("maps-finished", "ptwr_finish_v1", (onProgress) => computeFinishData(onProgress), serializeFinish, deserializeFinish);
+
+function modeToStore(mode) {
+  return mode === "finished" ? finishStore : wrStore;
+}
+
+function fmtCountdown(ms) {
+  const sec = Math.max(0, Math.ceil(ms / 1000));
+  return `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, "0")}`;
+}
+
+// The little status line above the leaderboard ("Updated 12:03 · next update in 4:32").
+function updateTimer() {
+  const el = document.getElementById("lbTimer");
+  if (!el) return;
+  const st = modeToStore(el.dataset.mode);
+  el.classList.toggle("is-updating", st.updating);
+  if (st.updating) {
+    el.textContent = st.progress ? `Updating… ${st.progress.done}/${st.progress.total}` : "Updating…";
+  } else if (!st.data) {
+    el.textContent = "";
+  } else if (st.lastError) {
+    el.textContent = `Couldn't update, showing older data · retrying in ${fmtCountdown(st.nextAt - Date.now())}`;
+  } else {
+    const at = new Date(st.fetchedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    el.textContent = `Updated ${at} · next update in ${fmtCountdown(st.nextAt - Date.now())}`;
+  }
+}
+
+// Called whenever a store finishes updating: redraw the list on screen, in place.
+function onStoreUpdated(st) {
+  const area = document.getElementById("rankArea");
+  if (!area || !st.data || !st.changed) return;
+  if (modeToStore(area.dataset.mode) !== st) return;
+  showLeaderboard(area.dataset.mode, st.data);
+}
+
+// Runs once a second: ticks the countdown and starts the refresh when it hits zero.
+// Only refreshes while a leaderboard page is open and the browser tab is visible.
+function startScheduler() {
+  setInterval(() => {
+    updateTimer();
+    if (document.visibilityState !== "visible") return;
+    const el = document.getElementById("lbTimer");
+    if (!el) return;
+    const st = modeToStore(el.dataset.mode);
+    if (st.data && !st.updating && Date.now() >= st.nextAt) st.refresh().catch(() => {});
+  }, 1000);
+}
+
+function manualRefresh(mode) {
+  const st = modeToStore(mode);
+  if (st.updating) return;
+  if (st.data && Date.now() - st.fetchedAt < CONFIG.LB_MIN_REFRESH_SECONDS * 1000) {
+    showToast("Already up to date");
+    return;
+  }
+  st.refresh().catch(() => {});
 }
 
 /* ============================================================
@@ -640,7 +829,10 @@ async function renderLeaderboard(mode) {
         <h3 style="margin:0;">${cfg.title}</h3>
         ${cfg.sub ? `<div class="lb-sub">${cfg.sub}</div>` : ""}
       </div>
-      <button class="btn ghost" id="refreshLbBtn">Refresh</button>
+      <div class="lb-actions">
+        <span class="lb-timer" id="lbTimer" data-mode="${mode}"></span>
+        <button class="btn ghost" id="refreshLbBtn">Refresh</button>
+      </div>
     </div>
     <div class="toolbar">
       <div class="search-box">
@@ -654,10 +846,8 @@ async function renderLeaderboard(mode) {
   const redrawFromFirstPage = () => { lbPage = 0; drawRankList(); };
   document.getElementById("lbSearch").addEventListener("input", redrawFromFirstPage);
   document.getElementById("lbSort")?.addEventListener("change", redrawFromFirstPage);
-  document.getElementById("refreshLbBtn").addEventListener("click", () =>
-    mode === "finished" ? renderFinishedData(true) : renderLeaderboardData(true, mode)
-  );
-  await (mode === "finished" ? renderFinishedData(false) : renderLeaderboardData(false, mode));
+  document.getElementById("refreshLbBtn").addEventListener("click", () => manualRefresh(mode));
+  await renderLeaderboardView(mode);
 }
 
 // Draws the list for the current mode, filtered by the search box.
@@ -742,71 +932,74 @@ function drawRankList() {
   );
 }
 
-async function renderLeaderboardData(force, mode) {
+// Shows data in the list area (or an explanation if there's nothing to show).
+function showLeaderboard(mode, data) {
   const area = document.getElementById("rankArea");
-  if (!area) return;
+  if (!area || area.dataset.mode !== mode) return;
 
-  lbView = null;
-  area.className = "lb-loading";
-  area.textContent = `Fetching WR holders across ${TRACKS.length} track${TRACKS.length === 1 ? "" : "s"}…`;
+  const emptyState = (html) => {
+    lbView = null;
+    area.className = "empty-state";
+    area.innerHTML = html;
+  };
 
-  const data = await getWrData(force);
-  const stillHere = document.getElementById("rankArea");
-  if (!stillHere || stillHere.dataset.mode !== mode) return; // user navigated away while this was loading
-
-  const empty =
-    (mode === "wr" && data.players.length === 0) ||
-    (mode === "latest" && data.records.length === 0) ||
-    (mode === "countries" && data.countries.length === 0);
-
-  if (empty) {
-    stillHere.className = "empty-state";
-    stillHere.innerHTML = mode === "countries" && data.records.length > 0
-      ? `<h3>No countries yet</h3><p>None of the record holders have set a country in game.</p>`
-      : `<h3>No world records found yet</h3><p>Once tracks have runs recorded, they'll show up here.</p>`;
-    return;
+  if (mode === "finished") {
+    if (data.failed > 0 && data.failed === data.total) {
+      return emptyState(`<h3>Couldn't load any track's runs</h3>
+        <p>The leaderboard server returned an error for every track.</p>
+        <p class="mono" style="font-size:12px;margin-top:8px;">${escapeHtml(data.firstError || "Unknown error")}</p>
+        <p style="margin-top:8px;">Press Refresh to retry, or open DevTools (F12) → Console for details.</p>`);
+    }
+    if (data.players.length === 0) {
+      return emptyState(`<h3>No finished runs yet</h3><p>Once players set times on the archived tracks, they'll show up here.</p>`);
+    }
+  } else {
+    const empty =
+      (mode === "wr" && data.players.length === 0) ||
+      (mode === "latest" && data.records.length === 0) ||
+      (mode === "countries" && data.countries.length === 0);
+    if (empty) {
+      return emptyState(mode === "countries" && data.records.length > 0
+        ? `<h3>No countries yet</h3><p>None of the record holders have set a country in game.</p>`
+        : `<h3>No world records found yet</h3><p>Once tracks have runs recorded, they'll show up here.</p>`);
+    }
   }
 
   lbView = { mode, data };
   drawRankList();
 }
 
-function finishProgressUpdater(done, total) {
-  const el = document.getElementById("rankArea");
-  if (el && el.dataset.mode === "finished" && el.classList.contains("lb-loading")) {
-    el.textContent = `Fetching every run… ${done}/${total} track${total === 1 ? "" : "s"} done`;
-  }
-}
-
-async function renderFinishedData(force) {
+// Opens a leaderboard: shows what we already have right away (even if a bit old;
+// the background refresh will swap in fresh data), or a loading message the very first time.
+async function renderLeaderboardView(mode) {
+  const st = modeToStore(mode);
   const area = document.getElementById("rankArea");
   if (!area) return;
 
+  if (st.data) {
+    showLeaderboard(mode, st.data);
+    updateTimer();
+    return;
+  }
+
   lbView = null;
   area.className = "lb-loading";
-  area.textContent = `Fetching every run… 0/${TRACKS.length} tracks done`;
+  area.textContent = mode === "finished"
+    ? `Fetching every run… 0/${TRACKS.length} tracks done`
+    : `Fetching WR holders across ${TRACKS.length} track${TRACKS.length === 1 ? "" : "s"}…`;
 
-  const data = await getFinishData(force, finishProgressUpdater);
-  const stillHere = document.getElementById("rankArea");
-  if (!stillHere || stillHere.dataset.mode !== "finished") return; // navigated away
-
-  if (data.failed > 0 && data.failed === data.total) {
-    stillHere.className = "empty-state";
-    stillHere.innerHTML = `<h3>Couldn't load any track's runs</h3>
-      <p>The leaderboard server returned an error for every track.</p>
-      <p class="mono" style="font-size:12px;margin-top:8px;">${escapeHtml(data.firstError || "Unknown error")}</p>
-      <p style="margin-top:8px;">Press Refresh to retry, or open DevTools (F12) → Console for details.</p>`;
-    return;
+  st.watch = (done, total) => {
+    const el = document.getElementById("rankArea");
+    if (mode === "finished" && el && el.dataset.mode === mode && el.classList.contains("lb-loading")) {
+      el.textContent = `Fetching every run… ${done}/${total} track${total === 1 ? "" : "s"} done`;
+    }
+  };
+  try {
+    await st.ensure();
+  } finally {
+    st.watch = null;
   }
-
-  if (data.players.length === 0) {
-    stillHere.className = "empty-state";
-    stillHere.innerHTML = `<h3>No finished runs yet</h3><p>Once players set times on the archived tracks, they'll show up here.</p>`;
-    return;
-  }
-
-  lbView = { mode: "finished", data };
-  drawRankList();
+  showLeaderboard(mode, st.data);
 }
 
 /* ============================================================
@@ -818,7 +1011,7 @@ async function renderPlayer(userId) {
     <div class="lb-loading" id="playerArea">Loading player…</div>
   `;
 
-  const data = await getWrData(false);
+  const data = await wrStore.ensure();
   const area = document.getElementById("playerArea");
   if (!area) return; // navigated away
 
@@ -861,10 +1054,16 @@ async function renderFinishedPlayer(userId) {
     <div class="lb-loading" id="playerArea">Loading player…</div>
   `;
 
-  const data = await getFinishData(false, (done, total) => {
+  finishStore.watch = (done, total) => {
     const el = document.getElementById("playerArea");
     if (el && el.classList.contains("lb-loading")) el.textContent = `Fetching every run… ${done}/${total} track${total === 1 ? "" : "s"} done`;
-  });
+  };
+  let data;
+  try {
+    data = await finishStore.ensure();
+  } finally {
+    finishStore.watch = null;
+  }
   const area = document.getElementById("playerArea");
   if (!area) return; // navigated away
 
@@ -953,6 +1152,9 @@ async function init() {
     console.error(err);
     return;
   }
+  wrStore.restore();
+  finishStore.restore();
+  startScheduler();
   window.addEventListener("hashchange", route);
   route();
 }
