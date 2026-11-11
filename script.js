@@ -11,6 +11,9 @@ const CONFIG = {
   LEADERBOARD_AMOUNT: 10,
   TRACKS_FILE: "tracks.json",
 
+  // How many rows each leaderboard page shows.
+  LB_PAGE_SIZE: 100,
+
   // --- "Maps finished" leaderboard (needs every run on every track) ---
   // Runs requested per API call. 500 is the server's maximum.
   FINISH_PAGE_SIZE: 500,
@@ -607,10 +610,24 @@ const LB_MODES = {
 // The leaderboard currently on screen: { mode, data }.
 // Kept so the search box can re-draw the list without fetching anything again.
 let lbView = null;
+let lbPage = 0; // current page (0-based) of the leaderboard on screen
+
+function pagerHtml(page, pages, total, size) {
+  const opts = Array.from({ length: pages }, (_, i) =>
+    `<option value="${i}" ${i === page ? "selected" : ""}>${i * size + 1}–${Math.min((i + 1) * size, total)}</option>`
+  ).join("");
+  return `
+    <div class="pager">
+      <button class="btn ghost" data-page-delta="-1" ${page === 0 ? "disabled" : ""}>← Previous</button>
+      <label class="pager-info">Showing <select class="lb-select" data-page-select>${opts}</select> of ${total}</label>
+      <button class="btn ghost" data-page-delta="1" ${page === pages - 1 ? "disabled" : ""}>Next →</button>
+    </div>`;
+}
 
 async function renderLeaderboard(mode) {
   const cfg = LB_MODES[mode];
   lbView = null;
+  lbPage = 0;
   const tab = (m, label) =>
     `<a class="subtab ${m === mode ? "active" : ""}" href="#leaderboard${m === "wr" ? "" : "/" + m}">${label}</a>`;
 
@@ -630,10 +647,13 @@ async function renderLeaderboard(mode) {
         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
         <input id="lbSearch" type="text" placeholder="${cfg.placeholder}" autocomplete="off" />
       </div>
+      ${mode === "latest" ? `<select class="lb-select" id="lbSort"><option value="newest">Newest first</option><option value="oldest">Oldest first</option></select>` : ""}
     </div>
     <div id="rankArea" class="lb-loading" data-mode="${mode}"></div>
   `;
-  document.getElementById("lbSearch").addEventListener("input", drawRankList);
+  const redrawFromFirstPage = () => { lbPage = 0; drawRankList(); };
+  document.getElementById("lbSearch").addEventListener("input", redrawFromFirstPage);
+  document.getElementById("lbSort")?.addEventListener("change", redrawFromFirstPage);
   document.getElementById("refreshLbBtn").addEventListener("click", () =>
     mode === "finished" ? renderFinishedData(true) : renderLeaderboardData(true, mode)
   );
@@ -689,7 +709,9 @@ function drawRankList() {
       </div>`);
   } else if (mode === "latest") {
     noun = "record";
-    rows = data.records.filter((r) => !q || has(r.nickname) || has(r.trackName)).map((r) => `
+    const oldestFirst = document.getElementById("lbSort")?.value === "oldest";
+    const ordered = oldestFirst ? data.records.slice().reverse() : data.records;
+    rows = ordered.filter((r) => !q || has(r.nickname) || has(r.trackName)).map((r) => `
       <a class="wr-row" href="#${r.trackNumber}">
         <div>
           <div class="wname">${escapeHtml(r.trackName)} <span class="wnum">#${r.trackNumber}</span></div>
@@ -705,7 +727,19 @@ function drawRankList() {
     area.innerHTML = `<div class="empty-state"><h3>No ${noun} matches “${escapeHtml(q)}”</h3><p>Check the spelling, or try a shorter part of the name.</p></div>` + notesHtml;
     return;
   }
-  area.innerHTML = rows.join("") + notesHtml;
+
+  const size = CONFIG.LB_PAGE_SIZE;
+  const pages = Math.max(1, Math.ceil(rows.length / size));
+  lbPage = Math.min(Math.max(lbPage, 0), pages - 1);
+  const pager = pages > 1 ? pagerHtml(lbPage, pages, rows.length, size) : "";
+  area.innerHTML = pager + rows.slice(lbPage * size, (lbPage + 1) * size).join("") + pager + notesHtml;
+
+  area.querySelectorAll("[data-page-delta]").forEach((b) =>
+    b.addEventListener("click", () => { lbPage += Number(b.dataset.pageDelta); drawRankList(); window.scrollTo(0, 0); })
+  );
+  area.querySelectorAll("[data-page-select]").forEach((sel) =>
+    sel.addEventListener("change", () => { lbPage = Number(sel.value); drawRankList(); window.scrollTo(0, 0); })
+  );
 }
 
 async function renderLeaderboardData(force, mode) {
