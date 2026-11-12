@@ -8,8 +8,17 @@ const CONFIG = {
   // API is keyed to it. Check https://kodub.itch.io/polytrack/devlog
   GAME_VERSION: "0.6.0",
   // How many rows to show on a track's page.
-  LEADERBOARD_AMOUNT: 10,
+  LEADERBOARD_AMOUNT: 20,
   TRACKS_FILE: "tracks.json",
+
+  // Tracks tagged "PF" in tracks.json (press-forward maps) never count for the
+  // world-record rankings (World records, Countries, Latest records) and,
+  // by default, not for "Maps finished" either.
+  // Set this to true if you want PF maps to count in "Maps finished" again.
+  PF_COUNTS_FOR_FINISHED: false,
+
+  // Where this browser remembers which player you are ("My profile").
+  ME_STORAGE_KEY: "ptwr_me_v1",
 
   // How many rows each leaderboard page shows.
   LB_PAGE_SIZE: 100,
@@ -103,6 +112,79 @@ function escapeHtml(str) {
 }
 
 /* ============================================================
+   TAGS, "ME", GAP AND TRACK-OF-THE-DAY HELPERS
+   ============================================================ */
+// A track is a "PF" (press-forward) map if tracks.json has  "tags": ["PF"]  on it.
+function isPF(track) {
+  return !!track && Array.isArray(track.tags) && track.tags.some((t) => String(t).trim().toUpperCase() === "PF");
+}
+
+// What a PF map is left out of, for the badge tooltip and the note on its page.
+function pfRankingsText() {
+  return CONFIG.PF_COUNTS_FOR_FINISHED ? "world-record" : "world-record or maps-finished";
+}
+
+function pfBadgeHtml(track) {
+  return isPF(track)
+    ? `<span class="tag-pf" title="Press-forward map: it doesn't count for the ${pfRankingsText()} rankings">PF</span>`
+    : "";
+}
+
+// "Me" = the unique player ID chosen on the My profile page (saved in this browser only).
+function getMe() {
+  try { return localStorage.getItem(CONFIG.ME_STORAGE_KEY) || null; } catch (e) { return null; }
+}
+
+function setMe(userId) {
+  try {
+    if (userId) localStorage.setItem(CONFIG.ME_STORAGE_KEY, userId);
+    else localStorage.removeItem(CONFIG.ME_STORAGE_KEY);
+  } catch (e) { /* storage unavailable: nothing to do */ }
+}
+
+// Time behind the world record, e.g. 1234 -> "+1.234", 61234 -> "+1:01.234".
+function formatGap(ms) {
+  if (!(ms > 0)) return "";
+  const total = Math.round(ms);
+  const m = Math.floor(total / 60000);
+  const s = Math.floor((total % 60000) / 1000);
+  const r = total % 1000;
+  return "+" + (m > 0 ? `${m}:${String(s).padStart(2, "0")}` : String(s)) + "." + String(r).padStart(3, "0");
+}
+
+// Same number every time for the same input: a tiny hash, so everybody sees the same track today.
+function hashIndex(key, n) {
+  let h = Math.imul(key ^ 0x9e3779b9, 2654435761) >>> 0;
+  h ^= h >>> 15; h = Math.imul(h, 2246822519) >>> 0;
+  h ^= h >>> 13; h = Math.imul(h, 3266489917) >>> 0;
+  h ^= h >>> 16;
+  return (h >>> 0) % n;
+}
+
+// One track per day (changes at 00:00 UTC), the same for every visitor.
+// PF maps are skipped, and it never shows the same track two days in a row:
+// the picks are worked out day by day from a fixed start date.
+function trackOfTheDay(now = new Date()) {
+  const pool = TRACKS.filter((t) => !isPF(t));
+  const list = (pool.length ? pool : TRACKS).slice().sort((a, b) => a.number - b.number);
+  if (list.length === 0) return null;
+  if (list.length === 1) return list[0];
+
+  const EPOCH = Date.UTC(2026, 0, 1);
+  const today = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
+  const days = Math.max(0, Math.round((today - EPOCH) / 86400000));
+
+  let prev = -1;
+  let idx = 0;
+  for (let d = 0; d <= days; d++) {
+    idx = hashIndex(d + 1, list.length);
+    if (idx === prev) idx = (idx + 1) % list.length;
+    prev = idx;
+  }
+  return list[idx];
+}
+
+/* ============================================================
    RENDER: LIST VIEW
    ============================================================ */
 function renderList() {
@@ -118,7 +200,21 @@ function renderList() {
     return;
   }
 
+  const totd = trackOfTheDay();
+  const totdBest = totd && wrStore.data ? wrStore.data.trackBestFrames[totd.number] : undefined;
+  const totdHtml = totd ? `
+    <a class="totd" href="#${totd.number}">
+      <div class="totd-thumb"><img src="${escapeHtml(totd.thumbnail || "thumbnails/default.svg")}" alt="" onerror="this.onerror=null;this.src='thumbnails/default.svg';"></div>
+      <div class="totd-info">
+        <div class="totd-label">⭐ Track of the day</div>
+        <div class="totd-name">${escapeHtml(totd.name)} <span class="wnum">#${totd.number}</span></div>
+        <div class="totd-meta">by ${escapeHtml(totd.author)}${totdBest !== undefined ? ` · WR ${formatTime(totdBest)}` : ""}</div>
+      </div>
+      <div class="totd-go">Play →</div>
+    </a>` : "";
+
   app.innerHTML = `
+    ${totdHtml}
     <div class="toolbar">
       <div class="search-box">
         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
@@ -134,6 +230,7 @@ function renderList() {
         <option value="longest">Longest first</option>
       </select>
       <button class="btn ghost" id="unbeatenToggle">🏆 Unbeaten only</button>
+      ${getMe() ? `<button class="btn ghost" id="todoToggle">✅ Not finished yet</button>` : ""}
       <button class="btn ghost" id="randomBtn">🎲 Random track</button>
     </div>
     <div class="track-grid" id="trackGrid"></div>
@@ -143,20 +240,35 @@ function renderList() {
   const searchInput = document.getElementById("searchInput");
   const sortSelect = document.getElementById("sortSelect");
   const unbeatenToggle = document.getElementById("unbeatenToggle");
+  const todoToggle = document.getElementById("todoToggle"); // only exists once a profile is set
   let unbeatenOnly = false;
+  let notFinishedOnly = false;
+
+  // Track numbers the saved player has a time on (null if no profile or data yet).
+  const finishedSetOf = (fdata) => {
+    const me = getMe();
+    if (!me || !fdata) return null;
+    const p = fdata.players.find((x) => x.userId === me);
+    return new Set((p ? p.finishes : []).map((f) => f.trackNumber));
+  };
+  const stateKey = () => `${sortSelect.value}|${unbeatenOnly}|${notFinishedOnly}`;
 
   async function draw() {
     const q = searchInput.value.trim().toLowerCase();
     const sortMode = sortSelect.value;
+    const key = stateKey();
     const needsStats = unbeatenOnly || ["mostPlayed", "leastPlayed", "shortest", "longest"].includes(sortMode);
 
     let stats = wrStore.data; // reuse the saved/cached data if we already have it
-    if (needsStats && !stats) {
+    let fdata = finishStore.data;
+    if ((needsStats && !stats) || (notFinishedOnly && !fdata)) {
       grid.innerHTML = `<div class="lb-loading">Fetching run data across ${TRACKS.length} track${TRACKS.length === 1 ? "" : "s"}…</div>`;
-      stats = await wrStore.ensure();
-      // bail out if the user changed search/sort/toggle while this was loading
-      if (!document.getElementById("trackGrid") || sortSelect.value !== sortMode || unbeatenToggle.classList.contains("active") !== unbeatenOnly) return;
+      if (needsStats && !stats) stats = await wrStore.ensure();
+      if (notFinishedOnly && !fdata) fdata = await finishStore.ensure();
+      // bail out if the user changed search/sort/toggles while this was loading
+      if (!document.getElementById("trackGrid") || stateKey() !== key) return;
     }
+    const finishedSet = finishedSetOf(fdata);
 
     let list = TRACKS.filter((t) =>
       !q ||
@@ -167,6 +279,9 @@ function renderList() {
 
     if (unbeatenOnly) {
       list = list.filter((t) => (stats?.trackTotals[t.number] ?? null) === 0);
+    }
+    if (notFinishedOnly && finishedSet) {
+      list = list.filter((t) => !finishedSet.has(t.number) && (CONFIG.PF_COUNTS_FOR_FINISHED || !isPF(t)));
     }
 
     list = list.slice().sort((a, b) => {
@@ -187,7 +302,11 @@ function renderList() {
     });
 
     if (list.length === 0) {
-      grid.innerHTML = `<div class="empty-state"><h3>No tracks match${unbeatenOnly ? " — nothing unbeaten right now" : " that search"}</h3><p>${unbeatenOnly ? "Every track currently has at least one finisher." : "Try a different name, author, or number."}</p></div>`;
+      let title = "No tracks match that search";
+      let text = "Try a different name, author, or number.";
+      if (!q && notFinishedOnly) { title = "Nothing left to finish"; text = "You have a time on every track. 🎉"; }
+      else if (unbeatenOnly) { title = "No tracks match — nothing unbeaten right now"; text = "Every track currently has at least one finisher."; }
+      grid.innerHTML = `<div class="empty-state"><h3>${title}</h3><p>${text}</p></div>`;
       return;
     }
 
@@ -197,11 +316,12 @@ function renderList() {
       const metaBits = [`by ${escapeHtml(t.author)}`, formatDate(t.date)];
       if (plays !== undefined) metaBits.push(plays === 0 ? "unbeaten" : `${plays} run${plays === 1 ? "" : "s"}`);
       if (best !== undefined) metaBits.push(formatTime(best));
+      if (finishedSet && finishedSet.has(t.number)) metaBits.push(`<span class="done">✓ finished</span>`);
       return `
         <a class="track-card" href="#${t.number}">
           <div class="track-num mono">#${t.number}</div>
           <div class="track-info">
-            <div class="name">${escapeHtml(t.name)}</div>
+            <div class="name">${escapeHtml(t.name)}${pfBadgeHtml(t)}</div>
             <div class="meta">${metaBits.join(" · ")}</div>
           </div>
           <svg class="chev" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
@@ -217,17 +337,27 @@ function renderList() {
     unbeatenToggle.classList.toggle("active", unbeatenOnly);
     draw();
   });
+  todoToggle?.addEventListener("click", () => {
+    notFinishedOnly = !notFinishedOnly;
+    todoToggle.classList.toggle("active", notFinishedOnly);
+    draw();
+  });
+
+  // Random track: respects whichever filters are switched on.
   document.getElementById("randomBtn").addEventListener("click", async () => {
     if (TRACKS.length === 0) return;
-    if (!unbeatenOnly) {
-      const pick = TRACKS[Math.floor(Math.random() * TRACKS.length)];
-      location.hash = `#${pick.number}`;
-      return;
+    let pool = TRACKS;
+    if (unbeatenOnly) {
+      const stats = wrStore.data || (await wrStore.ensure());
+      pool = pool.filter((t) => (stats.trackTotals[t.number] ?? null) === 0);
     }
-    const stats = wrStore.data || (await wrStore.ensure());
-    const pool = TRACKS.filter((t) => (stats.trackTotals[t.number] ?? null) === 0);
+    if (notFinishedOnly) {
+      const fdata = finishStore.data || (await finishStore.ensure());
+      const done = finishedSetOf(fdata) || new Set();
+      pool = pool.filter((t) => !done.has(t.number) && (CONFIG.PF_COUNTS_FOR_FINISHED || !isPF(t)));
+    }
     if (pool.length === 0) {
-      showToast("No unbeaten tracks right now");
+      showToast("No track matches your filters right now");
       return;
     }
     const pick = pool[Math.floor(Math.random() * pool.length)];
@@ -264,9 +394,10 @@ function renderDetail(num) {
           <img src="${escapeHtml(track.thumbnail || "thumbnails/default.svg")}" alt="${escapeHtml(track.name)} thumbnail"
                onerror="this.onerror=null;this.src='thumbnails/default.svg';">
         </div>
-        <h2 class="track-name">${escapeHtml(track.name)}</h2>
+        <h2 class="track-name">${escapeHtml(track.name)}${pfBadgeHtml(track)}</h2>
         <div class="author">by ${escapeHtml(track.author)}</div>
         <div class="track-num-small mono">#${track.number}</div>
+        ${isPF(track) ? `<div class="pf-note">PF map — its records don't count for the ${pfRankingsText()} rankings.</div>` : ""}
 
         <div class="field">
           <label>Posted</label>
@@ -328,16 +459,19 @@ async function loadLeaderboard(track) {
     }
 
     statusEl.textContent = `${data.total ?? entries.length} run${(data.total ?? entries.length) === 1 ? "" : "s"}`;
+    const me = getMe();
+    const best = entries[0].frames;
     bodyEl.innerHTML = `
       <table class="lb">
-        <thead><tr><th>#</th><th>Driver</th><th class="date-col">Set</th><th style="text-align:right;">Time</th></tr></thead>
+        <thead><tr><th>#</th><th>Driver</th><th class="date-col">Set</th><th style="text-align:right;">Time</th><th class="gap-col">Gap</th></tr></thead>
         <tbody>
           ${entries.map((e, i) => `
-            <tr class="${i === 0 ? "top1" : i === 1 ? "top2" : i === 2 ? "top3" : ""}" data-user-id="${escapeHtml(e.userId)}">
+            <tr class="${i === 0 ? "top1" : i === 1 ? "top2" : i === 2 ? "top3" : ""}${me && e.userId === me ? " me" : ""}" data-user-id="${escapeHtml(e.userId)}">
               <td class="pos">${i + 1}</td>
-              <td>${escapeHtml(e.nickname)}</td>
+              <td><a href="#finished/${encodeURIComponent(e.userId)}">${flagHtml(e.countryCode)}${escapeHtml(e.nickname)}</a></td>
               <td class="date-col">${formatDate(e.time)}</td>
               <td class="time">${formatTime(e.frames)}</td>
+              <td class="gap-col">${i === 0 ? "" : formatGap(e.frames - best)}</td>
             </tr>
           `).join("")}
         </tbody>
@@ -405,6 +539,7 @@ async function fetchTrackWinner(track) {
   return {
     trackNumber: track.number,
     trackName: track.name,
+    pf: isPF(track),
     total: data.total || 0,
     winner: top
       ? { userId: top.userId, nickname: top.nickname, frames: top.frames, time: top.time, countryCode: top.countryCode || null }
@@ -429,6 +564,7 @@ async function computeWrData() {
     const w = info.winner;
     if (!w) return;
     trackBestFrames[info.trackNumber] = w.frames;
+    if (info.pf) return; // PF maps never count for the world-record rankings
     if (!players.has(w.userId)) {
       players.set(w.userId, { userId: w.userId, nickname: w.nickname, countryCode: null, wins: [] });
     }
@@ -527,7 +663,9 @@ async function fetchAllRuns(track) {
 
 async function computeFinishData(onProgress) {
   const players = new Map(); // userId -> { userId, nickname, finishes: [] }
-  const queue = TRACKS.slice();
+  const included = TRACKS.filter((t) => CONFIG.PF_COUNTS_FOR_FINISHED || !isPF(t));
+  const queue = included.slice();
+  const trackWr = {}; // trackNumber -> world-record time (ms), used for the "gap" on player pages
   let failed = 0;
   let truncated = 0;
   let done = 0;
@@ -539,6 +677,7 @@ async function computeFinishData(onProgress) {
       try {
         const { runs, total, truncated: cut } = await fetchAllRuns(track);
         if (cut) truncated++;
+        if (runs.length) trackWr[track.number] = runs[0].frames;
         const seen = new Set();
         runs.forEach((r) => {
           if (seen.has(r.userId)) return; // only count a player's best entry once per track
@@ -564,11 +703,11 @@ async function computeFinishData(onProgress) {
         console.error(`Maps finished: couldn't load track #${track.number} (${track.name})`, err);
       }
       done++;
-      if (onProgress) onProgress(done, TRACKS.length);
+      if (onProgress) onProgress(done, included.length);
     }
   }
 
-  const workers = Math.max(1, Math.min(CONFIG.FINISH_CONCURRENCY, TRACKS.length));
+  const workers = Math.max(1, Math.min(CONFIG.FINISH_CONCURRENCY, included.length));
   await Promise.all(Array.from({ length: workers }, worker));
 
   const list = Array.from(players.values()).map((p) => ({
@@ -581,7 +720,7 @@ async function computeFinishData(onProgress) {
       a.avgRank - b.avgRank ||
       a.nickname.localeCompare(b.nickname)
   );
-  return { players: list, failed, truncated, firstError, total: TRACKS.length };
+  return { players: list, trackWr, failed, truncated, firstError, total: included.length };
 }
 
 /* ============================================================
@@ -600,7 +739,7 @@ const retryMs = () => CONFIG.LB_RETRY_SECONDS * 1000;
 // Changes whenever tracks.json or the game version changes, which throws
 // away the saved copy (it would be out of date).
 function tracksSignature() {
-  return CONFIG.GAME_VERSION + "|" + TRACKS.map((t) => `${t.number}:${t.trackId}`).join(",");
+  return "v2|" + CONFIG.GAME_VERSION + "|" + CONFIG.PF_COUNTS_FOR_FINISHED + "|" + TRACKS.map((t) => `${t.number}:${t.trackId}:${isPF(t) ? "pf" : ""}`).join(",");
 }
 
 function makeStore(name, storageKey, compute, serialize, deserialize) {
@@ -701,7 +840,7 @@ function makeStore(name, storageKey, compute, serialize, deserialize) {
 
 function serializeFinish(d) {
   return {
-    failed: d.failed, truncated: d.truncated, firstError: d.firstError, total: d.total,
+    failed: d.failed, truncated: d.truncated, firstError: d.firstError, total: d.total, trackWr: d.trackWr,
     players: d.players.map((p) => [
       p.userId, p.nickname, p.countryCode,
       p.finishes.map((f) => [f.trackNumber, f.rank, f.totalRuns, f.frames, f.time]),
@@ -718,7 +857,7 @@ function deserializeFinish(raw) {
     }));
     return { userId, nickname, countryCode, finishes, avgRank: finishes.reduce((sum, f) => sum + f.rank, 0) / finishes.length };
   });
-  return { players, failed: raw.failed, truncated: raw.truncated, firstError: raw.firstError, total: raw.total };
+  return { players, trackWr: raw.trackWr || {}, failed: raw.failed, truncated: raw.truncated, firstError: raw.firstError, total: raw.total };
 }
 
 const wrStore = makeStore("world-record", "ptwr_wr_v1", () => computeWrData(), (d) => d, (d) => d);
@@ -753,6 +892,11 @@ function updateTimer() {
 
 // Called whenever a store finishes updating: redraw the list on screen, in place.
 function onStoreUpdated(st) {
+  const profile = document.getElementById("profileArea");
+  if (profile && st === finishStore && st.data && st.changed && !profile.classList.contains("lb-loading")) {
+    drawProfile();
+    return;
+  }
   const area = document.getElementById("rankArea");
   if (!area || !st.data || !st.changed) return;
   if (modeToStore(area.dataset.mode) !== st) return;
@@ -840,12 +984,26 @@ async function renderLeaderboard(mode) {
         <input id="lbSearch" type="text" placeholder="${cfg.placeholder}" autocomplete="off" />
       </div>
       ${mode === "latest" ? `<select class="lb-select" id="lbSort"><option value="newest">Newest first</option><option value="oldest">Oldest first</option></select>` : ""}
+      ${getMe() && (mode === "wr" || mode === "finished") ? `<button class="btn ghost" id="lbJumpMe">📍 Find me</button>` : ""}
     </div>
     <div id="rankArea" class="lb-loading" data-mode="${mode}"></div>
   `;
   const redrawFromFirstPage = () => { lbPage = 0; drawRankList(); };
   document.getElementById("lbSearch").addEventListener("input", redrawFromFirstPage);
   document.getElementById("lbSort")?.addEventListener("change", redrawFromFirstPage);
+  document.getElementById("lbJumpMe")?.addEventListener("click", () => {
+    if (!lbView) return;
+    const idx = lbView.data.players.findIndex((p) => p.userId === getMe());
+    if (idx < 0) {
+      showToast(lbView.mode === "wr" ? "You don't hold a world record yet" : "You haven't finished a map yet");
+      return;
+    }
+    const search = document.getElementById("lbSearch");
+    if (search) search.value = "";
+    lbPage = Math.floor(idx / CONFIG.LB_PAGE_SIZE);
+    drawRankList();
+    document.querySelector("#rankArea .rank-row.me")?.scrollIntoView?.({ block: "center", behavior: "smooth" });
+  });
   document.getElementById("refreshLbBtn").addEventListener("click", () => manualRefresh(mode));
   await renderLeaderboardView(mode);
 }
@@ -859,6 +1017,8 @@ function drawRankList() {
 
   const q = (document.getElementById("lbSearch")?.value || "").trim().toLowerCase();
   const has = (text) => String(text).toLowerCase().includes(q);
+  const me = getMe();
+  const youTag = (id) => (id === me ? `<span class="you">you</span>` : "");
 
   const notes = [];
   if (data.failed > 0) notes.push(`${data.failed} track${data.failed === 1 ? "" : "s"} couldn't be checked (server error) — try Refresh.`);
@@ -875,16 +1035,16 @@ function drawRankList() {
 
   if (mode === "wr") {
     rows = data.players.map((p, i) => ({ p, rank: i + 1 })).filter(({ p }) => !q || has(p.nickname)).map(({ p, rank }) => `
-      <a class="rank-row ${rankClass(rank - 1)}" href="#player/${encodeURIComponent(p.userId)}">
+      <a class="rank-row ${rankClass(rank - 1)}${p.userId === me ? " me" : ""}" href="#player/${encodeURIComponent(p.userId)}">
         <div class="rank">${rank}</div>
-        <div class="rname">${flagHtml(p.countryCode)}${escapeHtml(p.nickname)}</div>
+        <div class="rname">${flagHtml(p.countryCode)}${escapeHtml(p.nickname)}${youTag(p.userId)}</div>
         <div class="rcount">${p.wins.length}<span>WR${p.wins.length === 1 ? "" : "s"}</span></div>
       </a>`);
   } else if (mode === "finished") {
     rows = data.players.map((p, i) => ({ p, rank: i + 1 })).filter(({ p }) => !q || has(p.nickname)).map(({ p, rank }) => `
-      <a class="rank-row ${rankClass(rank - 1)}" href="#finished/${encodeURIComponent(p.userId)}">
+      <a class="rank-row ${rankClass(rank - 1)}${p.userId === me ? " me" : ""}" href="#finished/${encodeURIComponent(p.userId)}">
         <div class="rank">${rank}</div>
-        <div class="rname">${flagHtml(p.countryCode)}${escapeHtml(p.nickname)}</div>
+        <div class="rname">${flagHtml(p.countryCode)}${escapeHtml(p.nickname)}${youTag(p.userId)}</div>
         <div class="ravg">avg rank <b>${p.avgRank.toFixed(2)}</b></div>
         <div class="rcount">${p.finishes.length}<span>/ ${data.total} map${data.total === 1 ? "" : "s"}</span></div>
       </a>`);
@@ -902,10 +1062,10 @@ function drawRankList() {
     const oldestFirst = document.getElementById("lbSort")?.value === "oldest";
     const ordered = oldestFirst ? data.records.slice().reverse() : data.records;
     rows = ordered.filter((r) => !q || has(r.nickname) || has(r.trackName)).map((r) => `
-      <a class="wr-row" href="#${r.trackNumber}">
+      <a class="wr-row${r.userId === me ? " me" : ""}" href="#${r.trackNumber}">
         <div>
           <div class="wname">${escapeHtml(r.trackName)} <span class="wnum">#${r.trackNumber}</span></div>
-          <div class="wmeta">${flagHtml(r.countryCode)}<b>${escapeHtml(r.nickname)}</b> · ${formatDate(r.time)} · ${timeAgo(r.time)}</div>
+          <div class="wmeta">${flagHtml(r.countryCode)}<b>${escapeHtml(r.nickname)}</b>${youTag(r.userId)} · ${formatDate(r.time)} · ${timeAgo(r.time)}</div>
         </div>
         <div class="wtime">${formatTime(r.frames)}</div>
       </a>`);
@@ -1005,6 +1165,28 @@ async function renderLeaderboardView(mode) {
 /* ============================================================
    RENDER: PLAYER VIEW (world records)
    ============================================================ */
+function meButtonHtml(userId) {
+  if (getMe() === userId) {
+    return `<span class="you-badge">✓ This is you</span><button class="btn ghost small" data-me-action="clear">Not me</button>`;
+  }
+  return `<button class="btn ghost small" data-me-action="set" data-user-id="${escapeHtml(userId)}">This is me</button>`;
+}
+
+function bindMeButtons(container, rerender) {
+  container.querySelectorAll("[data-me-action]").forEach((b) =>
+    b.addEventListener("click", () => {
+      if (b.dataset.meAction === "set") {
+        setMe(b.dataset.userId);
+        showToast("Saved — this browser now knows who you are");
+      } else {
+        setMe(null);
+        showToast("Profile removed");
+      }
+      rerender();
+    })
+  );
+}
+
 async function renderPlayer(userId) {
   app.innerHTML = `
     <a class="back-link" href="#leaderboard">← Back to leaderboard</a>
@@ -1030,6 +1212,7 @@ async function renderPlayer(userId) {
     <div class="player-header">
       <h2>${flagHtml(player.countryCode)}${escapeHtml(player.nickname)}</h2>
       <span class="wr-count">${wins.length} world record${wins.length === 1 ? "" : "s"}</span>
+      <span class="me-actions">${meButtonHtml(userId)}</span>
     </div>
     <div class="wr-list">
       ${wins.map((w) => `
@@ -1043,11 +1226,27 @@ async function renderPlayer(userId) {
       `).join("")}
     </div>
   `;
+  bindMeButtons(area, () => renderPlayer(userId));
 }
 
 /* ============================================================
    RENDER: PLAYER VIEW (maps finished + rank on each)
    ============================================================ */
+// One row of a "maps this player finished" list: rank, gap to the WR, time.
+function finishRowHtml(f, trackWr) {
+  const wr = trackWr ? trackWr[f.trackNumber] : undefined;
+  const gap = f.rank > 1 && wr !== undefined ? formatGap(f.frames - wr) : "";
+  const track = trackByNumber(f.trackNumber);
+  return `
+    <a class="wr-row" href="#${f.trackNumber}">
+      <div>
+        <div class="wname">${escapeHtml(f.trackName)}${pfBadgeHtml(track)}</div>
+        <div class="wmeta">#${f.trackNumber} · rank <b>${f.rank}</b> of ${f.totalRuns}${gap ? ` · <span class="gap-inline">${gap} from WR</span>` : ""} · ${formatDate(f.time)}</div>
+      </div>
+      <div class="wtime">${formatTime(f.frames)}</div>
+    </a>`;
+}
+
 async function renderFinishedPlayer(userId) {
   app.innerHTML = `
     <a class="back-link" href="#leaderboard/finished">← Back to maps finished</a>
@@ -1082,19 +1281,172 @@ async function renderFinishedPlayer(userId) {
     <div class="player-header">
       <h2>${flagHtml(player.countryCode)}${escapeHtml(player.nickname)}</h2>
       <span class="wr-count">${finishes.length} map${finishes.length === 1 ? "" : "s"} finished · avg rank ${player.avgRank.toFixed(2)}</span>
+      <span class="me-actions">${meButtonHtml(userId)}</span>
     </div>
     <div class="wr-list">
-      ${finishes.map((f) => `
-        <a class="wr-row" href="#${f.trackNumber}">
-          <div>
-            <div class="wname">${escapeHtml(f.trackName)}</div>
-            <div class="wmeta">#${f.trackNumber} · rank <b>${f.rank}</b> of ${f.totalRuns} · ${formatDate(f.time)}</div>
-          </div>
-          <div class="wtime">${formatTime(f.frames)}</div>
-        </a>
-      `).join("")}
+      ${finishes.map((f) => finishRowHtml(f, data.trackWr)).join("")}
     </div>
   `;
+  bindMeButtons(area, () => renderFinishedPlayer(userId));
+}
+
+/* ============================================================
+   RENDER: MY PROFILE
+   The visitor picks themselves once; we keep their unique player ID
+   in this browser (never their name, so duplicate names can't clash).
+   ============================================================ */
+async function renderProfile() {
+  app.innerHTML = `
+    <div class="lb-header">
+      <div>
+        <h3 style="margin:0;">My profile</h3>
+        <div class="lb-sub">Your player ID is saved only in this browser.</div>
+      </div>
+      <div class="lb-actions"><span class="lb-timer" id="lbTimer" data-mode="finished"></span></div>
+    </div>
+    <div id="profileArea" class="lb-loading">Loading…</div>
+  `;
+  if (!finishStore.data) {
+    finishStore.watch = (done, total) => {
+      const el = document.getElementById("profileArea");
+      if (el && el.classList.contains("lb-loading")) el.textContent = `Fetching every run… ${done}/${total} track${total === 1 ? "" : "s"} done`;
+    };
+    try {
+      await finishStore.ensure();
+    } finally {
+      finishStore.watch = null;
+    }
+  }
+  drawProfile();
+  updateTimer();
+}
+
+function drawProfile() {
+  const area = document.getElementById("profileArea");
+  const data = finishStore.data;
+  if (!area || !data) return;
+  area.className = "";
+  const me = getMe();
+  if (!me) {
+    drawProfilePicker(area, data);
+    return;
+  }
+
+  const player = data.players.find((p) => p.userId === me);
+  const standing = player ? data.players.indexOf(player) + 1 : null;
+  const finishes = player ? player.finishes.slice().sort((a, b) => a.trackNumber - b.trackNumber) : [];
+  const done = new Set(finishes.map((f) => f.trackNumber));
+  const wrs = finishes.filter((f) => f.rank === 1 && !isPF(trackByNumber(f.trackNumber))).length;
+  const todo = TRACKS
+    .filter((t) => !done.has(t.number) && (CONFIG.PF_COUNTS_FOR_FINISHED || !isPF(t)))
+    .sort((a, b) => a.number - b.number);
+
+  area.innerHTML = `
+    <div class="player-header">
+      <h2>${player ? flagHtml(player.countryCode) + escapeHtml(player.nickname) : "Unknown player"}</h2>
+      <span class="wr-count">player ID …${escapeHtml(me.slice(-6))}</span>
+      <span class="me-actions">
+        ${player ? `<a class="btn ghost small" href="#finished/${encodeURIComponent(me)}">Public page</a>` : ""}
+        <button class="btn ghost small" id="meSwitch">Switch player</button>
+      </span>
+    </div>
+    <div class="stat-chips">
+      <div class="stat-chip"><b>${finishes.length} / ${data.total}</b><span>maps finished</span></div>
+      <div class="stat-chip"><b>${player ? player.avgRank.toFixed(2) : "–"}</b><span>average rank</span></div>
+      <div class="stat-chip"><b>${wrs}</b><span>world record${wrs === 1 ? "" : "s"}</span></div>
+      <div class="stat-chip"><b>${standing ? "#" + standing : "–"}</b><span>on the Maps finished board</span></div>
+    </div>
+    <h4 class="section-title">Your maps (${finishes.length})</h4>
+    ${player
+      ? `<div class="wr-list">${finishes.map((f) => finishRowHtml(f, data.trackWr)).join("")}</div>`
+      : `<div class="empty-state" style="padding:24px 0;"><p>No finished run found for this player ID yet. Finish a map and it will show up here after the next update.</p></div>`}
+    <h4 class="section-title">Still to finish (${todo.length})</h4>
+    ${todo.length === 0
+      ? `<div class="empty-state" style="padding:24px 0;"><p>You have a time on every track. 🎉</p></div>`
+      : `<div class="wr-list">${todo.map((t) => `
+        <a class="wr-row" href="#${t.number}">
+          <div>
+            <div class="wname">${escapeHtml(t.name)}${pfBadgeHtml(t)} <span class="wnum">#${t.number}</span></div>
+            <div class="wmeta">by ${escapeHtml(t.author)}</div>
+          </div>
+          <div class="wgo">Play →</div>
+        </a>`).join("")}</div>`}
+  `;
+  document.getElementById("meSwitch").addEventListener("click", () => {
+    setMe(null);
+    drawProfile();
+  });
+}
+
+function drawProfilePicker(area, data) {
+  const typedId = document.getElementById("meIdInput")?.value || "";
+  const typedName = document.getElementById("meSearch")?.value || "";
+  area.innerHTML = `
+    <div class="panel">
+      <h3 style="margin:0 0 6px;">Who are you?</h3>
+      <p class="me-help">Paste your player ID to link this browser to your profile. It is only saved in this browser.</p>
+      <div class="toolbar">
+        <div class="search-box"><input id="meIdInput" type="text" placeholder="Paste your player ID…" autocomplete="off" spellcheck="false" value="${escapeHtml(typedId)}" /></div>
+        <button class="btn" id="meIdSave">Save</button>
+      </div>
+
+      <div class="me-or">or find yourself by name</div>
+      <div class="toolbar">
+        <div class="search-box">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+          <input id="meSearch" type="text" placeholder="Type your in-game name…" autocomplete="off" value="${escapeHtml(typedName)}" />
+        </div>
+      </div>
+      <div id="meResults" class="rank-list"></div>
+      <p class="me-help" style="margin-top:14px;">You can also press "This is me" on any player page.</p>
+    </div>
+  `;
+  const idInput = document.getElementById("meIdInput");
+  const input = document.getElementById("meSearch");
+  const results = document.getElementById("meResults");
+
+  const saveId = () => {
+    const v = idInput.value.trim();
+    if (!/^[0-9a-f]{16,128}$/i.test(v)) {
+      showToast("That doesn't look like a player ID");
+      return;
+    }
+    setMe(v.toLowerCase());
+    showToast("Saved — welcome!");
+    drawProfile();
+  };
+  document.getElementById("meIdSave").addEventListener("click", saveId);
+  idInput.addEventListener("keydown", (e) => { if (e.key === "Enter") saveId(); });
+
+  const drawResults = () => {
+    const q = input.value.trim().toLowerCase();
+    if (!q) {
+      results.innerHTML = "";
+      return;
+    }
+    const matches = data.players
+      .filter((p) => p.nickname.toLowerCase().includes(q))
+      .sort((a, b) => b.finishes.length - a.finishes.length)
+      .slice(0, 20);
+    results.innerHTML = matches.length
+      ? matches.map((p) => `
+          <div class="rank-row" data-pick="${escapeHtml(p.userId)}">
+            <div class="rname">${flagHtml(p.countryCode)}${escapeHtml(p.nickname)}</div>
+            <div class="ravg">ID …${escapeHtml(p.userId.slice(-6))}</div>
+            <div class="rcount">${p.finishes.length}<span>map${p.finishes.length === 1 ? "" : "s"}</span></div>
+          </div>`).join("")
+      : `<p class="me-help">No player found with that name. Only players who finished at least one counted track appear here.</p>`;
+  };
+
+  input.addEventListener("input", drawResults);
+  results.addEventListener("click", (e) => {
+    const row = e.target.closest("[data-pick]");
+    if (!row) return;
+    setMe(row.dataset.pick);
+    showToast("Saved — welcome!");
+    drawProfile();
+  });
+  drawResults();
 }
 
 /* ============================================================
@@ -1103,12 +1455,15 @@ async function renderFinishedPlayer(userId) {
 function setActiveTab(hash) {
   const tracksTab = document.getElementById("navTracks");
   const lbTab = document.getElementById("navLeaderboard");
-  if (!tracksTab || !lbTab) return;
+  const meTab = document.getElementById("navMe");
+  if (!tracksTab || !lbTab || !meTab) return;
   const onLeaderboardSide =
     hash === "leaderboard" || hash.startsWith("leaderboard/") ||
     hash.startsWith("player/") || hash.startsWith("finished/");
-  tracksTab.classList.toggle("active", !onLeaderboardSide);
+  const onMe = hash === "me";
+  tracksTab.classList.toggle("active", !onLeaderboardSide && !onMe);
   lbTab.classList.toggle("active", onLeaderboardSide);
+  meTab.classList.toggle("active", onMe);
 }
 
 function route() {
@@ -1120,6 +1475,8 @@ function route() {
   } else if (hash === "leaderboard" || hash.startsWith("leaderboard/")) {
     const mode = hash === "leaderboard" ? "wr" : hash.slice("leaderboard/".length);
     renderLeaderboard(LB_MODES[mode] ? mode : "wr");
+  } else if (hash === "me") {
+    renderProfile();
   } else if (hash.startsWith("player/")) {
     renderPlayer(hash.slice("player/".length));
   } else if (hash.startsWith("finished/")) {
