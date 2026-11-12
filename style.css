@@ -297,3 +297,57 @@ footer a{color:var(--text-muted);text-decoration:underline;}
   background:var(--accent);margin-right:7px;animation:lbPulse 1s ease-in-out infinite;
 }
 @keyframes lbPulse{50%{opacity:0.25;}}
+
+/* ---------- PF tag ---------- */
+.tag-pf{
+  display:inline-block;margin-left:8px;padding:1px 7px;
+  font-family:'Space Grotesk',sans-serif;font-size:11px;font-weight:700;letter-spacing:0.05em;
+  color:#101319;background:var(--gold);vertical-align:middle;
+}
+.panel .track-name .tag-pf{font-size:12px;padding:2px 8px;margin-left:10px;vertical-align:6px;}
+.pf-note{font-size:12.5px;color:var(--gold);margin:-8px 0 16px;}
+
+/* ---------- Track of the day ---------- */
+.totd{
+  display:flex;align-items:center;gap:16px;margin-bottom:18px;padding:12px 18px 12px 12px;
+  background:var(--surface);border:1px solid var(--accent);color:inherit;text-decoration:none;
+  clip-path:polygon(0 0,100% 0,100% calc(100% - 14px),calc(100% - 14px) 100%,0 100%);
+  transition:background 0.12s ease;
+}
+.totd:hover{background:var(--surface-hi);}
+.totd-thumb{flex:none;width:64px;height:79px;background:#212b58;border:1px solid var(--border);overflow:hidden;}
+.totd-thumb img{width:100%;height:100%;object-fit:cover;display:block;image-rendering:pixelated;}
+.totd-info{flex:1;min-width:0;}
+.totd-label{font-size:11.5px;font-weight:700;letter-spacing:0.05em;color:var(--accent-hi);text-transform:uppercase;}
+.totd-name{font-family:'Space Grotesk',sans-serif;font-size:20px;font-weight:700;margin:2px 0;}
+.totd-meta{font-size:13px;color:var(--text-muted);}
+.totd-go{flex:none;font-weight:600;color:var(--accent-hi);}
+@media (max-width:480px){.totd-go{display:none;}}
+
+/* ---------- "me" highlight, small buttons, badges ---------- */
+.rank-row.me,.wr-row.me{border-color:var(--accent);background:rgba(255,90,54,0.10);}
+table.lb tr.me td{background:rgba(255,90,54,0.12);}
+.you{margin-left:8px;padding:1px 6px;font-size:10.5px;font-weight:700;color:#160a06;background:var(--accent);vertical-align:middle;}
+.you-badge{font-size:13px;font-weight:600;color:var(--ok);}
+.btn.small{padding:6px 12px;font-size:12.5px;}
+.me-actions{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-left:auto;}
+.done{color:var(--ok);}
+
+/* ---------- Gap to the world record ---------- */
+table.lb .gap-col{font-family:'JetBrains Mono',monospace;font-size:12.5px;color:var(--text-muted);text-align:right;white-space:nowrap;}
+table.lb th.gap-col{font-family:'Inter',sans-serif;}
+table.lb a{color:inherit;text-decoration:none;}
+table.lb a:hover{text-decoration:underline;}
+.gap-inline{color:var(--text-muted);}
+
+/* ---------- My profile ---------- */
+.stat-chips{display:flex;flex-wrap:wrap;gap:10px;margin:4px 0 8px;}
+.stat-chip{background:var(--surface);border:1px solid var(--border);padding:10px 16px;min-width:130px;}
+.stat-chip b{display:block;font-family:'Space Grotesk',sans-serif;font-size:22px;}
+.stat-chip span{font-size:11.5px;color:var(--text-muted);}
+.section-title{margin:26px 0 10px;font-size:14px;letter-spacing:0.03em;color:var(--text-muted);}
+.me-help{font-size:13px;color:var(--text-muted);margin:4px 0 12px;}
+.me-advanced{margin-top:16px;font-size:13px;color:var(--text-muted);}
+.me-advanced summary{cursor:pointer;}
+.wr-row .wgo{flex:none;color:var(--text-muted);font-size:13px;}
+.me-or{margin:20px 0 10px;font-size:12.5px;color:var(--text-muted);text-align:center;}
