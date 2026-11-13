@@ -19,6 +19,7 @@ const TRACKS_FILE = process.env.TRACKS_FILE || "tracks.json";
 const STATE_FILE = process.env.STATE_FILE || "data/wr-state.json";
 const SITE_SCRIPT = process.env.SITE_SCRIPT || "script.js";
 const SEND_TEST = process.env.SEND_TEST === "true";
+const USER_AGENT = `PolyTrackWorldRecords-Alerts/1.0${SITE_URL ? ` (+${SITE_URL})` : ""}`;
 const REQUEST_DELAY_MS = Number(process.env.REQUEST_DELAY_MS ?? 400); // pause between tracks
 const MAX_ALERTS_PER_RUN = 10;
 
@@ -76,8 +77,11 @@ async function fetchTopRun(leaderboardUrl, version, track) {
   let lastErr;
   for (let attempt = 1; attempt <= 3; attempt++) {
     try {
-      const res = await fetch(url);
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const res = await fetch(url, { headers: { "user-agent": USER_AGENT, accept: "application/json" } });
+      if (!res.ok) {
+        const snippet = (await res.text().catch(() => "")).replace(/\s+/g, " ").slice(0, 120);
+        throw new Error(`HTTP ${res.status}${snippet ? ` — ${snippet}` : ""}`);
+      }
       const data = await res.json();
       const top = (data.entries || [])[0];
       return top
