@@ -234,10 +234,17 @@ async function main() {
   await mkdir(dirname(STATE_FILE), { recursive: true });
   await writeFile(STATE_FILE, JSON.stringify(nextState, null, 2) + "\n");
 
+  if (tracks.length === 0) {
+    console.log("No tracks to check: tracks.json is empty, or every track is tagged PF or has no trackId.");
+  }
   console.log(
     `${tracks.length} track(s) checked, ${failed} failed, ${sent} alert(s) sent` +
     (firstRun ? " (first run: records remembered, nothing posted)" : "")
   );
+  if (tracks.length > 0 && failed === tracks.length) {
+    console.error("Every track failed to load, so nothing could be checked. See the errors above (is the leaderboard address reachable from GitHub?).");
+    process.exitCode = 1; // makes the run show up red in the Actions tab
+  }
 }
 
 main().catch((err) => {
