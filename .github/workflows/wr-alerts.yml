@@ -1,0 +1,50 @@
+# Posts a Discord message whenever a world record is beaten.
+
+name: World record alerts
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"      # every 10 minutes (GitHub may run it a few minutes late)
+  workflow_dispatch:             # lets you start it by hand from the Actions tab
+    inputs:
+      send_test:
+        description: "Only send a test message to Discord"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write                # needed to save data/wr-state.json
+
+concurrency:
+  group: wr-alerts
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Check the world records and post to Discord
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          SITE_URL: https://csniper777.github.io/polytrack-wr
+          SEND_TEST: ${{ inputs.send_test }}
+        run: node scripts/check-wrs.mjs
+
+      - name: Save the records we've seen
+        run: |
+          if [ -f data/wr-state.json ]; then git add data/wr-state.json; fi
+          if ! git diff --cached --quiet; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git commit -m "Update world record state"
+            for i in 1 2 3; do
+              git pull --rebase && git push && break
+              sleep 3
+            done
+          fi
