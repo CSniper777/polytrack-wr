@@ -34,7 +34,7 @@ jobs:
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
           # TODO: replace with your real site address (same one as in index.html)
-          SITE_URL: https://YOUR-USERNAME.github.io/YOUR-REPO
+          SITE_URL: https://csniper777.github.io/polytrack-wr
           SEND_TEST: ${{ inputs.send_test }}
         run: node scripts/check-wrs.mjs
 
