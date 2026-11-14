@@ -114,9 +114,89 @@ function escapeHtml(str) {
 /* ============================================================
    TAGS, "ME", GAP AND TRACK-OF-THE-DAY HELPERS
    ============================================================ */
-// A track is a "PF" (press-forward) map if tracks.json has  "tags": ["PF"]  on it.
+// ---------------------------------------------------------------------
+// TAGS
+// A track can carry tags in tracks.json:   "tags": ["Fullspeed", "Kacky"]
+// Names are not case-sensitive, and the aliases below also work (e.g. "PF").
+// A tag that is not in this list still works: it is just shown without an emoji.
+// "Press Forward" is special: those maps never count for the rankings.
+// ---------------------------------------------------------------------
+const TAG_DEFS = [
+  { name: "Fakespeed", emoji: "▶️" },
+  { name: "Fullspeed", emoji: "⏩" },
+  { name: "Technical", emoji: "🧠" },
+  { name: "Kacky", emoji: "😈" },
+  { name: "Experimental", emoji: "🤔" },
+  { name: "RPG", emoji: "🪄" },
+  { name: "Practice", emoji: "🏋️" },
+  { name: "Press Forward", emoji: "⏫", aliases: ["PF"] },
+  { name: "Casual", emoji: "🥰" },
+  { name: "Painfully Long 15m+", emoji: "😱", aliases: ["Long", "15m+"] },
+  { name: "Campaign", emoji: "🚴" },
+  { name: "Scenic", emoji: "🌲" },
+  { name: "Collaboration", emoji: "🤝", aliases: ["Collab"] },
+  { name: "Modded", emoji: "🪵" },
+  { name: "Mini", emoji: "🤏" },
+  { name: "Mega", emoji: "🗻" },
+];
+
+const tagKey = (text) => String(text).toLowerCase().replace(/[^a-z0-9+]/g, "");
+const PF_KEY = tagKey("Press Forward");
+const TAG_BY_KEY = new Map();
+TAG_DEFS.forEach((def) => {
+  [def.name, ...(def.aliases || [])].forEach((n) => TAG_BY_KEY.set(tagKey(n), def));
+});
+
+// The tags of a track as clean objects: { key, name, emoji, known, pf }.
+function trackTags(track) {
+  if (!track || !Array.isArray(track.tags)) return [];
+  if (track._tags) return track._tags;
+  const seen = new Set();
+  const out = [];
+  track.tags.forEach((raw) => {
+    const text = String(raw).trim();
+    if (!text) return;
+    const def = TAG_BY_KEY.get(tagKey(text));
+    const name = def ? def.name : text;
+    const key = tagKey(name);
+    if (!key || seen.has(key)) return;
+    seen.add(key);
+    out.push({ key, name, emoji: def ? def.emoji : "🏷️", known: !!def, pf: key === PF_KEY });
+  });
+  track._tags = out;
+  return out;
+}
+
+// A "Press Forward" (PF) map never counts for the rankings.
 function isPF(track) {
-  return !!track && Array.isArray(track.tags) && track.tags.some((t) => String(t).trim().toUpperCase() === "PF");
+  return trackTags(track).some((t) => t.pf);
+}
+
+function tagChipHtml(tag) {
+  return `<span class="tag${tag.pf ? " pf" : ""}">${tag.emoji} ${escapeHtml(tag.name)}</span>`;
+}
+
+function tagsHtml(track) {
+  const tags = trackTags(track);
+  return tags.length ? `<div class="tags">${tags.map(tagChipHtml).join("")}</div>` : "";
+}
+
+// Every tag used by at least one track, with how many tracks have it
+// (known tags in the order of TAG_DEFS, then any extra ones A-Z).
+function tagsInUse() {
+  const map = new Map();
+  TRACKS.forEach((t) => trackTags(t).forEach((tag) => {
+    if (!map.has(tag.key)) map.set(tag.key, { tag, count: 0 });
+    map.get(tag.key).count++;
+  }));
+  const order = TAG_DEFS.map((d) => tagKey(d.name));
+  return [...map.values()].sort((a, b) => {
+    const ia = order.indexOf(a.tag.key), ib = order.indexOf(b.tag.key);
+    if (ia !== -1 && ib !== -1) return ia - ib;
+    if (ia !== -1) return -1;
+    if (ib !== -1) return 1;
+    return a.tag.name.localeCompare(b.tag.name);
+  });
 }
 
 // What a PF map is left out of, for the badge tooltip and the note on its page.
@@ -233,6 +313,7 @@ function renderList() {
       ${getMe() ? `<button class="btn ghost" id="todoToggle">✅ Not finished yet</button>` : ""}
       <button class="btn ghost" id="randomBtn">🎲 Random track</button>
     </div>
+    ${tagsInUse().length ? `<div class="tag-filter" id="tagFilter"></div>` : ""}
     <div class="track-grid" id="trackGrid"></div>
   `;
 
@@ -243,6 +324,31 @@ function renderList() {
   const todoToggle = document.getElementById("todoToggle"); // only exists once a profile is set
   let unbeatenOnly = false;
   let notFinishedOnly = false;
+  const selectedTags = new Set(); // tag keys picked in the tag filter (a track must have all of them)
+  const matchesTags = (t) => {
+    if (selectedTags.size === 0) return true;
+    const keys = new Set(trackTags(t).map((g) => g.key));
+    return [...selectedTags].every((k) => keys.has(k));
+  };
+
+  const tagFilterEl = document.getElementById("tagFilter");
+  const tagList = tagsInUse();
+  function drawTagFilter() {
+    if (!tagFilterEl) return;
+    tagFilterEl.innerHTML =
+      tagList.map(({ tag, count }) => `
+        <button class="tag-chip${selectedTags.has(tag.key) ? " active" : ""}${tag.pf ? " pf" : ""}" data-tag="${escapeHtml(tag.key)}">${tag.emoji} ${escapeHtml(tag.name)}<span class="n">${count}</span></button>`).join("") +
+      (selectedTags.size ? `<button class="tag-chip clear" data-tag-clear="1">✕ Clear</button>` : "");
+  }
+  tagFilterEl?.addEventListener("click", (e) => {
+    const btn = e.target.closest("button");
+    if (!btn) return;
+    if (btn.hasAttribute("data-tag-clear")) selectedTags.clear();
+    else if (selectedTags.has(btn.dataset.tag)) selectedTags.delete(btn.dataset.tag);
+    else selectedTags.add(btn.dataset.tag);
+    drawTagFilter();
+    draw();
+  });
 
   // Track numbers the saved player has a time on (null if no profile or data yet).
   const finishedSetOf = (fdata) => {
@@ -251,7 +357,7 @@ function renderList() {
     const p = fdata.players.find((x) => x.userId === me);
     return new Set((p ? p.finishes : []).map((f) => f.trackNumber));
   };
-  const stateKey = () => `${sortSelect.value}|${unbeatenOnly}|${notFinishedOnly}`;
+  const stateKey = () => `${sortSelect.value}|${unbeatenOnly}|${notFinishedOnly}|${[...selectedTags].join(",")}`;
 
   async function draw() {
     const q = searchInput.value.trim().toLowerCase();
@@ -274,9 +380,13 @@ function renderList() {
       !q ||
       t.name.toLowerCase().includes(q) ||
       t.author.toLowerCase().includes(q) ||
+      trackTags(t).some((g) => g.name.toLowerCase().includes(q)) ||
       String(t.number) === q
     );
 
+    if (selectedTags.size) {
+      list = list.filter(matchesTags);
+    }
     if (unbeatenOnly) {
       list = list.filter((t) => (stats?.trackTotals[t.number] ?? null) === 0);
     }
@@ -305,6 +415,7 @@ function renderList() {
       let title = "No tracks match that search";
       let text = "Try a different name, author, or number.";
       if (!q && notFinishedOnly) { title = "Nothing left to finish"; text = "You have a time on every track. 🎉"; }
+      else if (selectedTags.size && !unbeatenOnly) { title = "No track has all of those tags"; text = "Remove a tag to see more tracks."; }
       else if (unbeatenOnly) { title = "No tracks match — nothing unbeaten right now"; text = "Every track currently has at least one finisher."; }
       grid.innerHTML = `<div class="empty-state"><h3>${title}</h3><p>${text}</p></div>`;
       return;
@@ -321,8 +432,9 @@ function renderList() {
         <a class="track-card" href="#${t.number}">
           <div class="track-num mono">#${t.number}</div>
           <div class="track-info">
-            <div class="name">${escapeHtml(t.name)}${pfBadgeHtml(t)}</div>
+            <div class="name">${escapeHtml(t.name)}</div>
             <div class="meta">${metaBits.join(" · ")}</div>
+            ${tagsHtml(t)}
           </div>
           <svg class="chev" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
         </a>
@@ -346,7 +458,7 @@ function renderList() {
   // Random track: respects whichever filters are switched on.
   document.getElementById("randomBtn").addEventListener("click", async () => {
     if (TRACKS.length === 0) return;
-    let pool = TRACKS;
+    let pool = TRACKS.filter(matchesTags);
     if (unbeatenOnly) {
       const stats = wrStore.data || (await wrStore.ensure());
       pool = pool.filter((t) => (stats.trackTotals[t.number] ?? null) === 0);
@@ -364,6 +476,7 @@ function renderList() {
     location.hash = `#${pick.number}`;
   });
 
+  drawTagFilter();
   draw();
 }
 
@@ -394,9 +507,10 @@ function renderDetail(num) {
           <img src="${escapeHtml(track.thumbnail || "thumbnails/default.svg")}" alt="${escapeHtml(track.name)} thumbnail"
                onerror="this.onerror=null;this.src='thumbnails/default.svg';">
         </div>
-        <h2 class="track-name">${escapeHtml(track.name)}${pfBadgeHtml(track)}</h2>
+        <h2 class="track-name">${escapeHtml(track.name)}</h2>
         <div class="author">by ${escapeHtml(track.author)}</div>
         <div class="track-num-small mono">#${track.number}</div>
+        ${tagsHtml(track)}
         ${isPF(track) ? `<div class="pf-note">PF map — its records don't count for the ${pfRankingsText()} rankings.</div>` : ""}
 
         <div class="field">
