@@ -1609,6 +1609,7 @@ async function init() {
     const res = await fetch(CONFIG.TRACKS_FILE);
     if (!res.ok) throw new Error(`Could not load ${CONFIG.TRACKS_FILE} (${res.status})`);
     TRACKS = await res.json();
+    document.getElementById("trackCount").textContent = TRACKS.length;
   } catch (err) {
     app.innerHTML = `
       <div class="empty-state">
