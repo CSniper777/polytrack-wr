@@ -374,3 +374,76 @@ table.lb a:hover{text-decoration:underline;}
 .tag-chip.active .n{color:#160a06;}
 .tag-chip.pf:not(.active){border-color:var(--gold);}
 .tag-chip.clear{color:var(--text-muted);border-style:dashed;}
+
+/* =====================================================================
+   PHONE LAYOUT
+   ===================================================================== */
+html{-webkit-text-size-adjust:100%;}
+/* Panels may shrink below the width of their content (long track codes, wide tables)
+   instead of stretching the whole page sideways. */
+.detail-grid > *{min-width:0;}
+@media (max-width:680px){
+  .detail-grid{grid-template-columns:minmax(0,1fr);}
+}
+
+@media (max-width:480px){
+  .wrap{padding:18px 14px 60px;}
+
+  /* header */
+  header.top{gap:6px 12px;margin-bottom:16px;}
+  .logo-text h1{font-size:18px;}
+  header.top .stat{margin-left:0;text-align:left;display:flex;align-items:baseline;gap:6px;width:100%;}
+  header.top .stat b{display:inline;font-size:15px;}
+
+  /* tabs and sub-tabs: stay on one line (sub-tabs scroll sideways if needed) */
+  .tabs .tab{margin-right:16px;}
+  .subtabs{flex-wrap:nowrap;overflow-x:auto;margin-right:-14px;padding-right:14px;scrollbar-width:none;}
+  .subtabs::-webkit-scrollbar{display:none;}
+  .subtab{flex:none;white-space:nowrap;}
+
+  /* search / sort / buttons: tidy rows instead of random wrapping */
+  .toolbar{gap:8px;}
+  .toolbar .search-box{flex:1 1 100%;}
+  .toolbar select{flex:1 1 100%;padding:10px 12px;font-size:14px;min-height:44px;}
+  .toolbar .btn{flex:1 1 calc(50% - 4px);justify-content:center;}
+
+  /* tag filter: a single row you can swipe */
+  .tag-filter{flex-wrap:nowrap;overflow-x:auto;margin-right:-14px;padding:0 14px 6px 0;scrollbar-width:none;}
+  .tag-filter::-webkit-scrollbar{display:none;}
+  .tag-chip{flex:none;white-space:nowrap;}
+
+  /* track cards: long names wrap onto two lines instead of being cut off */
+  .track-card{padding:12px 14px;gap:12px;}
+  .track-num{width:44px;height:44px;font-size:14px;}
+  .track-info .name{white-space:normal;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;}
+  .totd{padding:10px 14px 10px 10px;gap:12px;}
+  .totd-name{font-size:17px;}
+
+  /* leaderboard rows: the second figure (average rank, players, ...) goes on its own line */
+  .rank-row{flex-wrap:wrap;padding:11px 14px;gap:4px 12px;}
+  .rank-row .rank{width:28px;}
+  .rank-row .ravg{display:block;order:3;flex:0 0 calc(100% - 40px);margin:-2px 0 0 40px;font-size:11.5px;}
+
+  /* header line with the update timer + Refresh */
+  .lb-header{align-items:flex-start;}
+  .lb-actions{width:100%;justify-content:space-between;gap:8px;}
+  .lb-timer{font-size:11.5px;}
+
+  /* track page */
+  .panel{padding:16px 14px;}
+  .panel .track-name{font-size:26px;}
+  table.lb{font-size:13px;}
+  table.lb th,table.lb td{padding:9px 5px;}
+  table.lb .pos{width:24px;}
+  table.lb td:nth-child(2){max-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+  table.lb .time{font-size:12.5px;white-space:nowrap;}
+  /* Time and Gap only take the room they need, so driver names get the rest */
+  table.lb th:nth-child(4),table.lb th:nth-child(5),table.lb td.time,table.lb td.gap-col{width:1%;white-space:nowrap;}
+  table.lb td:nth-child(2) .flag{height:11px;margin-right:5px;}
+
+  /* player pages */
+  .player-header h2{font-size:24px;}
+  .me-actions{margin-left:0;width:100%;}
+  .stat-chip{min-width:calc(50% - 5px);flex:1 1 calc(50% - 5px);}
+  .pager{justify-content:center;}
+}
